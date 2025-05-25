@@ -1,3 +1,5 @@
+import os
+
 import torch
 import torch
 import torch.nn as nn
@@ -16,11 +18,15 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 import polars as pl
 
+from graph_nn.model import EarlyStopping
+
+
 class Trainer:
     def __init__(
             self,
             model: nn.Module,
             device: str = "cuda" if torch.cuda.is_available() else "cpu",
+            wandb_run: wandb.sdk.wandb_run.Run | None = None,
             learning_rate: float = 0.001,
             weight_decay: float = 0.01,
             train_data: list[Data] | None = None,
@@ -60,14 +66,20 @@ class Trainer:
         self.test_loader = DataLoader(test_data, batch_size=32, shuffle=False)
         assert self.test_loader is not None, "test_loader is None"
 
+        self.wandb_run = wandb_run
+
 
     def train(
             self,
             num_epochs: int = 50,
             model_save_path: str = "models"
     ) -> None:
+        checkpoint_dir = "checkpoints"
+        os.makedirs(checkpoint_dir, exist_ok=True)
         train_losses = []
         val_losses = []
+
+        early_stopping = EarlyStopping(patience=5, delta=0.01)
 
         for epoch in range(num_epochs):
             self.model.train()
@@ -102,37 +114,32 @@ class Trainer:
                 "train_loss": avg_train_loss,
                 "val_loss": avg_val_loss
             })
-        plt.figure(figsize=(8, 5))
-        plt.plot(train_losses, label='Train Loss')
-        plt.plot(val_losses, label='Validation Loss')
-        plt.xlabel('Epoch')
-        plt.ylabel('MSE Loss')
-        plt.title('Training and Validation Loss Over Epochs')
-        plt.legend()
-        plt.grid(True)
-        plt.tight_layout()
-        plt.savefig(f"{model_save_path}/loss_plot.png")
+
+            checkpoint_path = os.path.join(checkpoint_dir, f"epoch_{epoch}.pt")
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': self.model.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'val_loss': val_loss,
+            }, checkpoint_path)
+
+            print(f"Checkpoint saved: {checkpoint_path}")
+
+            early_stopping(val_loss, self.model)
+            if early_stopping.early_stop:
+                print(f"Early stopping at epoch {epoch}. Best validation loss: {early_stopping.best_score:.4f}")
+                break
+
+        torch.save(self.model.state_dict(), "output/model_weights.pkl")
+        artifact = wandb.Artifact("bus_delay_model", type="model")
+        artifact.add_file("output/model_weights.pkl")
+        self.wandb_run.log_artifact(artifact)
+
+
 
     def predict_test(self):
-        """
-        Evaluate the model on the test set and log metrics.
-        """
 
-        # self.model.eval()
-        # all_targets = []
-        # all_preds = []
-        # print(self.test_loader)
-        #
-        # with torch.no_grad():
-        #     for batch in self.test_loader:
-        #         batch = batch.to(self.device)
-        #         out = self.model(batch.x, batch.edge_index)
-        #         mask = ~torch.isnan(batch.y)
-        #         preds = out[mask].squeeze()
-        #         targets = batch.y[mask]
-        #         all_targets.extend(targets.tolist())
-        #         all_preds.extend(preds.tolist())
-        # return all_targets, all_preds
+
         """
            Evaluate the model on the test set, log per-feature metrics, and return predictions/targets.
            """
@@ -142,9 +149,9 @@ class Trainer:
         all_preds = []
         all_lines = []
         all_arrival_hours = []
+        all_line_types = []
+        weekdays = []
 
-        # Track errors per feature
-        feature_stats = defaultdict(lambda: {"targets": [], "preds": []})
 
         with torch.no_grad():
             for batch in self.test_loader:
@@ -158,10 +165,14 @@ class Trainer:
                 # Collect the features to group by
                 arrival_hours = batch.x[mask, 0].cpu().tolist()  # arrival_hour
                 line_encoded = batch.x[mask, 8].cpu().tolist()  # line_encoded
+                line_type = batch.x[mask, 9].cpu().tolist()  # line_type
+                is_weekend = batch.x[mask, 5].cpu().tolist()  # is_weekend
                 # create a df with arrival_hours, line_encoded, prediction, target
                 # Create a DataFrame for easier handling
                 all_arrival_hours.extend(arrival_hours)
                 all_lines.extend(line_encoded)
+                all_line_types.extend(line_type)
+                weekdays.extend(is_weekend)
 
                 # Also track overall
                 all_targets.extend(targets.tolist())
@@ -171,11 +182,60 @@ class Trainer:
         final_df = pl.DataFrame({
             "arrival_hour": all_arrival_hours,
             "line_encoded": all_lines,
+            "line_type": all_line_types,
+            "weekday": weekdays,
             "targets": all_targets,
             "preds": all_preds
         })
 
-        return all_targets, all_preds, final_df
+        return final_df
+
+    def predict_with_debug(self, data_loader: DataLoader):
+        self.model.eval()
+        all_targets = []
+        all_preds = []
+        all_lines = []
+        all_arrival_hours = []
+        all_line_types = []
+        weekdays = []
+
+
+        with torch.no_grad():
+            for batch in data_loader:
+                batch = batch.to(self.device)
+                out = self.model(batch.x, batch.edge_index)
+
+                mask = ~torch.isnan(batch.y)
+                preds = out[mask].squeeze()
+                targets = batch.y[mask]
+
+                # Collect the features to group by
+                arrival_hours = batch.x[mask, 0].cpu().tolist()  # arrival_hour
+                line_encoded = batch.x[mask, 8].cpu().tolist()  # line_encoded
+                line_type = batch.x[mask, 9].cpu().tolist()  # line_type
+                is_weekend = batch.x[mask, 5].cpu().tolist()  # is_weekend
+                # create a df with arrival_hours, line_encoded, prediction, target
+                # Create a DataFrame for easier handling
+                all_arrival_hours.extend(arrival_hours)
+                all_lines.extend(line_encoded)
+                all_line_types.extend(line_type)
+                weekdays.extend(is_weekend)
+
+                # Also track overall
+                all_targets.extend(targets.tolist())
+                all_preds.extend(preds.tolist())
+
+
+        final_df = pl.DataFrame({
+            "arrival_hour": all_arrival_hours,
+            "line_encoded": all_lines,
+            "line_type": all_line_types,
+            "weekday": weekdays,
+            "targets": all_targets,
+            "preds": all_preds
+        })
+
+        return final_df
 
 
 

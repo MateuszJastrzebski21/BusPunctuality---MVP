@@ -12,6 +12,8 @@ import torch
 from torch_geometric.data import Data
 from plotting_utils import plot_basic_graph
 import wandb
+from tqdm import tqdm
+
 
 class DataPreparation:
     def __init__(self, data_path: str, wandb_run: wandb.sdk.wandb_run.Run | None = None):
@@ -42,12 +44,12 @@ class DataPreparation:
             'arrival_day',
             'arrival_month',
             'arrival_year',
+'line_type_encoded',
+
         ]
 
         self.numerical_columns = [
-            'Linia',
             'Lp przystanku',
-            'Rodzaj detekcji',
             'stop_lat',
             'stop_lon',
             'arrival_hour',
@@ -56,14 +58,15 @@ class DataPreparation:
             'arrival_day',
             'arrival_month',
             'arrival_year',
+            'line_type_encoded',
         ]
 
         self.features = ["arrival_hour", "arrival_minute","arrival_day",
                                       "arrival_month", "arrival_year", "is_weekday",
-                                      "lat", "lon", "line_encoded"]
+                                      "stop_lat", "stop_lon", "line_encoded", 'line_type_encoded', 'Lp przystanku']
         self.wandb_run = wandb_run if wandb_run else None
 
-    def load_data(self, line_number: str = None) -> pl.DataFrame:
+    def load_data(self, line_number: list[str] | None = None) -> pl.DataFrame:
         """
         Load data from parquet file and optionally filter by line number.
 
@@ -75,7 +78,7 @@ class DataPreparation:
         """
         df = pl.read_parquet(self.data_path)
         if line_number:
-            df = df.filter(pl.col("Linia") == line_number)
+            df = df.filter(pl.col("Linia").is_in(line_number))
         return df
 
     def preprocess_data(self, df: pl.DataFrame) -> pl.DataFrame:
@@ -95,6 +98,16 @@ class DataPreparation:
             pl.col("Rozkladowy czas odjazdu").dt.day().alias("arrival_day"),
             pl.col("Rozkladowy czas odjazdu").dt.month().alias("arrival_month"),
             pl.col("Rozkladowy czas odjazdu").dt.year().alias("arrival_year"),
+        ])
+
+        df = df.with_columns([
+            pl.when(pl.col("Linia").str.strip_chars().str.to_lowercase().str.starts_with("n"))
+            .then(2)  # Night route
+            .when(pl.col("Linia").str.strip_chars().str.extract(r"^(\d+)", 1).cast(pl.Int64, strict=False).is_between(1,
+                                                                                                                      99))
+            .then(1)  # Tram route
+            .otherwise(0)  # Bus route
+            .alias("line_type_encoded").cast(pl.Int8)
         ])
 
         # Print null statistics
@@ -136,8 +149,19 @@ class DataPreparation:
         df = df.with_columns([
             pl.col("is_weekday").cast(pl.Int8),
             pl.col("Lp przystanku").alias("original_lp_przystanku"),
-            pl.col("Linia").cast(pl.Categorical).cast(pl.UInt32).alias("line_encoded")
         ])
+
+        unique_lines = df.select("Linia").unique().sort("Linia").to_series().to_list()
+        line_mapping = {line: idx for idx, line in enumerate(unique_lines)}
+        df = df.with_columns(
+            pl.col("Linia").replace(line_mapping).alias("line_encoded").cast(pl.Int16),
+        )
+        self.wandb_run.log({
+            "line_id_mapping": wandb.Table(
+                data=[[k, v] for k, v in line_mapping.items()],
+                columns=["line_name", "line_encoded"]
+            )
+        })
 
         return df
 
@@ -207,26 +231,22 @@ class DataPreparation:
 
     def prepare_edge_list(self, df: pl.DataFrame, X, stop_mapping_out_file: str = "output/stop_mapping.json"):
         """
-                Prepare the edge list for the graph. List of [(source,dest), (source, destination),...] pairs.
-                :param stop_mapping_out_file: Path to the output file for stop mapping.
-                :return: Tuple[List[Tuple[int, int]], Dict[int, int]]
-                """
-
+        Prepare the edge list for the graph. List of [(source, dest), ...] pairs.
+        :param stop_mapping_out_file: Path to the output file for stop mapping.
+        :return: Tuple[List[Tuple[int, int]], Dict[int, int]]
+        """
         edge_list = []
 
         stop_ids = sorted(df['Przystanek numer'].unique())
         stop_id_map = {sid: i for i, sid in enumerate(stop_ids)}
-        # with open(stop_mapping_out_file, "w") as f:
-        #     json.dump(stop_id_map, f)
-        #todo fix
-        # wandb.log({"stop_mapping": wandb.Table(data=stop_id_map.items(), columns=["stop_id", "index"])})
 
-        for _, group in X.sort(['Primary Key', 'Lp przystanku']).group_by('Primary Key'):
+        grouped_list = list(X.sort(['Primary Key', 'Lp przystanku']).group_by('Primary Key'))
+        for _, group in tqdm(grouped_list, desc="Building edge list", total=len(grouped_list)):
             stops = group['Przystanek numer'].to_list()
             for i in range(len(stops) - 1):
                 edge_list.append((stops[i], stops[i + 1]))
 
-        edge_list = list(set(edge_list))
+        edge_list = list(set(edge_list))  # remove duplicates
         print(f"Number of edges: {len(edge_list)}")
         return edge_list, stop_id_map
 
@@ -262,6 +282,57 @@ class DataPreparation:
 
         wandb.log({"bus_graph_map": wandb.Plotly(fig)})
 
+    # def prepare_graph_features(self, df, stop_id_map, edge_index):
+    #     """
+    #     Prepare graph features for each trip.
+    #     :param df: DataFrame containing the data.
+    #     :param stop_id_map: Mapping of stop IDs to indices.
+    #     :param edge_index: Edge index tensor.
+    #     :return: List of Data objects.
+    #     """
+    #
+    #     data_list = []
+    #
+    #     df = df.sort(['scheduled_trip_start'])
+    #     grouped = df.group_by("Primary Key", maintain_order=True)
+    #
+    #     trip_counts = grouped.agg(pl.count()).to_pandas()
+    #     wandb.log({
+    #         "trip_counts": wandb.Table(
+    #             data=trip_counts,
+    #             columns=["trip_id", "records_per_trip"]
+    #         )
+    #     })
+    #
+    #
+    #     for trip_id, group_df in tqdm(grouped, desc="Processing trips"):
+    #         group_df = group_df.filter(pl.col("Przystanek numer").is_in(list(stop_id_map.keys())))
+    #
+    #         if group_df.height == 0:
+    #             continue
+    #
+    #         # map stop number to index
+    #         group_df = group_df.with_columns([
+    #             pl.col("Przystanek numer").replace(stop_id_map).alias("stop_idx")
+    #         ])
+    #
+    #         # convert features to tensor: shape [num_nodes, num_features]
+    #         x_values = torch.tensor(group_df.select(self.features).to_numpy(), dtype=torch.float32)
+    #
+    #         # create x tensor (num_total_nodes, num_features), fill with zeros
+    #         x = torch.zeros(len(stop_id_map), len(self.features), dtype=torch.float32)
+    #         x[group_df["stop_idx"].to_numpy()] = x_values
+    #
+    #         # delay target: shape [num_total_nodes]
+    #         y = torch.full((len(stop_id_map),), float("nan"), dtype=torch.float32)
+    #         y[group_df["stop_idx"].to_numpy()] = torch.tensor(group_df["delay"].to_numpy(), dtype=torch.float32)
+    #
+    #         data = Data(x=x, edge_index=edge_index, y=y)
+    #         data_list.append(data)
+    #
+    #     print(f"Number of graphs: {len(data_list)}")
+    #     return data_list
+
     def prepare_graph_features(self, df, stop_id_map, edge_index):
         """
         Prepare graph features for each trip.
@@ -274,7 +345,7 @@ class DataPreparation:
 
         df = df.sort(['scheduled_trip_start'])
         grouped = df.group_by("Primary Key", maintain_order=True)
-        # log a df with two columns: trip id and records per trip id
+
         trip_counts = grouped.agg(pl.count()).to_pandas()
         wandb.log({
             "trip_counts": wandb.Table(
@@ -284,29 +355,22 @@ class DataPreparation:
         })
         #make boxplot of records per trip id
 
-
-        wandb.log({
-            "line_names": wandb.Table(
-                data=df.select(["Linia", "line_encoded"]).unique().to_pandas(),
-                columns=["line_name", "line_encoded"]
-            )
-        })
-
-        for trip_id, group_df in grouped:
+        print(f"Number of trips: {grouped.len()}")
+        for trip_id, group_df in tqdm(grouped, desc="Processing trips", total=grouped.len().shape[0]):
             # print(f"Processing trip {trip_id} with {len(group_df)} records.")
             group_dict = group_df.to_dict(as_series=False)
 
             num_nodes = len(stop_id_map)
-            x = torch.zeros(num_nodes, 9, dtype=torch.float32)
+            x = torch.zeros(num_nodes, len(self.features), dtype=torch.float32)
             y = torch.full((num_nodes,), float('nan'), dtype=torch.float32)
 
+            #todo refactor
 
             for i in range(len(group_dict["Przystanek numer"])):
                 stop = group_dict["Przystanek numer"][i]
                 idx = stop_id_map.get(stop)
                 if idx is None:
                     continue  # skip unknown stops
-
 
                 x[idx] = torch.tensor([
                     group_dict["arrival_hour"][i],
@@ -318,6 +382,8 @@ class DataPreparation:
                     group_dict["stop_lat"][i],
                     group_dict["stop_lon"][i],
                     group_dict["line_encoded"][i],
+                    group_dict["line_type_encoded"][i],
+                    group_dict["Lp przystanku"][i],
                 ], dtype=torch.float32)
 
                 y[idx] = group_dict["delay"][i]
@@ -378,7 +444,7 @@ class DataPreparation:
         return df
 
     def visualize_features_in_train_val_test_splits(self, train_data: List[Data], val_data: List[Data], test_data: List[Data]):
-        #todo add dates
+        #todo add full dates to visualization
         df_train = self._extract_features(train_data, "Train")
         df_val = self._extract_features(val_data, "Validation")
         df_test = self._extract_features(test_data, "Test")
@@ -388,7 +454,7 @@ class DataPreparation:
 
         # Plot using Seaborn
         sns.set(style="whitegrid")
-        fig, axs = plt.subplots(5, 2, figsize=(14, 12))
+        fig, axs = plt.subplots(len(self.features)//2 + 1, 2, figsize=(14, 12))
         self.features += ["delay"]
         for i, feature in enumerate(self.features):
             row, col = divmod(i, 2)

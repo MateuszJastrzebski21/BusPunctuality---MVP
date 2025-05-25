@@ -23,8 +23,9 @@ class Evaluator:
 
     def calculate_metrics(
             self,
-            y_true,
-            y_pred
+            y_true: np.ndarray,
+            y_pred: np.ndarray,
+            metric_prefix: str = "test"
     ) -> Dict[str, float]:
         """
         Calculate regression metrics.
@@ -38,10 +39,10 @@ class Evaluator:
         """
 
         metrics = {
-            "mse": mean_squared_error(y_true, y_pred),
-            "rmse": np.sqrt(mean_squared_error(y_true, y_pred)),
-            "mae": mean_absolute_error(y_true, y_pred),
-            "r2": r2_score(y_true, y_pred)
+            f"{metric_prefix}_mse": mean_squared_error(y_true, y_pred),
+            f"{metric_prefix}_rmse": np.sqrt(mean_squared_error(y_true, y_pred)),
+            f"{metric_prefix}_mae": mean_absolute_error(y_true, y_pred),
+            f"{metric_prefix}_r2": r2_score(y_true, y_pred)
         }
 
         self.wandb_run.log(metrics)
@@ -50,10 +51,11 @@ class Evaluator:
 
     def plot_predictions(
             self,
-            y_true,
-            y_pred,
+            y_true: np.ndarray,
+            y_pred: np.ndarray,
             title: str = "Predicted vs Actual Delays",
-            save_name: Optional[str] = "predictions_vs_actuals_plot_test"
+            metric_prefix: str = "test",
+            save_name: Optional[str] = f"predictions_vs_actuals_plot"
     ):
         """
         Create scatter plot of predicted vs actual values.
@@ -78,18 +80,19 @@ class Evaluator:
         plt.legend()
 
         if save_name:
-            plt.savefig(f"output/{save_name}.png")
+            plt.savefig(f"output/{save_name}_{metric_prefix}.png")
             plt.close()
-            self.wandb_run.log({f"output/{save_name}_plot": wandb.Image(f"output/{save_name}.png")})
+            self.wandb_run.log({f"output/{save_name}_{metric_prefix}_plot": wandb.Image(f"output/{save_name}_{metric_prefix}.png")})
         else:
             plt.show()
 
     def plot_error_distribution(
             self,
-            y_true: torch.Tensor,
-            y_pred: torch.Tensor,
+            y_true: np.ndarray,
+            y_pred: np.ndarray,
             title: str = "Prediction Error Distribution",
-            save_name: Optional[str] = "error_distribution_plot_test"
+            metric_prefix: str = "test",
+            save_name: Optional[str] = "error_distribution_plot"
     ):
         """
         Plot distribution of prediction errors.
@@ -115,8 +118,8 @@ class Evaluator:
         plt.title(title)
         plt.legend()
 
-        plt.savefig(f"output/{save_name}.png")
-        self.wandb_run.log({f"{save_name}_plot": wandb.Image(f"output/{save_name}.png")})
+        plt.savefig(f"output/{save_name}_{metric_prefix}.png")
+        self.wandb_run.log({f"{save_name}_{metric_prefix}_plot": wandb.Image(f"output/{save_name}_{metric_prefix}.png")})
         plt.close()
 
 
@@ -164,107 +167,43 @@ class Evaluator:
     def plot_per_feature_rmse(
             self,
             feature_stats: pl.dataframe,
-            save_name: Optional[str] = "output/metrics_per_feature_test"
+            metric_prefix: str = "test",
+            save_name: Optional[str] = "output/metrics_per_feature"
     ):
-        # # Print per-feature MAE and RMSE
-        # print("\n🔎 Per-feature error metrics:")
-        # for feature_val, group in sorted(feature_stats.items()):
-        #     y_true = np.array(group["targets"])
-        #     y_pred = np.array(group["preds"])
-        #
-        #     mae = mean_absolute_error(y_true, y_pred)
-        #     rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-        #
-        #     print(f"{feature_val:>10s} | MAE: {mae:.2f} | RMSE: {rmse:.2f}")
-
         """
             Plot MAE and RMSE per feature value.
             :param feature_stats: dict from predict_test with structure:
                                   { "hour=6": {"targets": [...], "preds": [...]}, ... }
             """
-        # rows = []
-        # for feature_val, group in feature_stats.items():
-        #     y_true = group["targets"]
-        #     y_pred = group["preds"]
-        #     mae = mean_absolute_error(y_true, y_pred)
-        #     rmse = root_mean_squared_error(y_true, y_pred)
-        #     rows.append({"feature": feature_val, "MAE": mae, "RMSE": rmse})
-        #
-        # df_metrics = pl.DataFrame(rows)
-        # print(df_metrics)
-        #
-        # # split feature column to feature type and value by = in polars
-        # # Note: polars does not support str.extract like pandas, so we use str.split
-        # df_metrics = df_metrics.with_columns(
-        #     pl.col("feature").str.split("=").arr.get(0).alias("feature_type"),
-        #     pl.col("feature").str.split("=").arr.get(1).alias("feature_value")
-        # )
-        #
-        # # # Optional: split feature type for subplots
-        # # df_metrics["feature_type"] = df_metrics["feature"].str.extract(r"^(line|hour)")
-        # # df_metrics["feature_value"] = df_metrics["feature"].str.extract(r"=(\d+)")
-        #
-        # print(df_metrics)
-        # # group by feature type
-        # grouped_by_feature_type = df_metrics.group_by("feature_type")
-        # for feature_type, group in grouped_by_feature_type:
-        #     print(f"\nFeature Type: {feature_type}")
-        #     print(group)
-        #     # Plot MAE
-        #     plt.figure(figsize=(12, 6))
-        #     sns.barplot(data=group.sort("feature_value"), x="feature_value", y="MAE")
-        #     plt.title("MAE per Feature Value")
-        #     plt.xlabel("Feature Value")
-        #     plt.ylabel("Mean Absolute Error")
-        #     plt.legend(title="Feature Type")
-        #     plt.tight_layout()
-        #     plt.savefig(f"{save_name}_{feature_type}_mae.png")
-        #     self.wandb_run.log({f"{save_name}_{feature_type}_mae_plot": wandb.Image(f"{save_name}_{feature_type}_mae.png")})
-        #
-        #
-        #     # Plot RMSE
-        #     plt.figure(figsize=(12, 6))
-        #     sns.barplot(data=group.sort_values("feature_value"), x="feature_value", y="RMSE", hue="feature_type")
-        #     plt.title("RMSE per Feature Value")
-        #     plt.xlabel("Feature Value")
-        #     plt.ylabel("Root Mean Squared Error")
-        #     plt.legend(title="Feature Type")
-        #     plt.tight_layout()
-        #     plt.savefig(f"{save_name}_{feature_type}_rmse_plot.png")
-        #     self.wandb_run.log({f"{save_name}_{feature_type}_rmse_plot": wandb.Image(f"{save_name}_{feature_type}_rmse_plot.png")})
 
-        # feature_stats is a df  final_df = pl.DataFrame({
-        #             "arrival_hour": all_arrival_hours,
-        #             "line_encoded": all_lines,
-        #             "targets": all_targets,
-        #             "preds": all_preds
-        #         })
-        # plot per feature RMSE
-        print(feature_stats)
+        feature_stats = feature_stats.with_columns(
+            (pl.col("preds") - pl.col("targets")).pow(2).sqrt().alias("RMSE")
+        )
+
         for feature in feature_stats.columns:
-            if feature not in ["targets", "preds"]:
-                # Calculate RMSE per feature value
-                print(feature_stats.select(
-                    pl.col(feature),
-                    pl.col("targets"),
-                    pl.col("preds")
-                ).describe())
-                # rmse_per_value = feature_stats.groupby(feature).agg(
-                #     pl.col("targets").alias("targets"),
-                #     pl.col("preds").alias("preds")
-                # ).with_columns(
-                #     (pl.col("preds") - pl.col("targets")).pow(2).sqrt().alias("RMSE")
-                # )
-                #
-                # # Plot RMSE
-                # plt.figure(figsize=(12, 6))
-                # sns.barplot(data=rmse_per_value, x=feature, y="RMSE")
-                # plt.title(f"RMSE per {feature}")
-                # plt.xlabel(feature)
-                # plt.ylabel("Root Mean Squared Error")
-                # plt.tight_layout()
-                # plt.savefig(f"{save_name}_{feature}_rmse_plot.png")
-                # self.wandb_run.log({f"{save_name}_{feature}_rmse_plot": wandb.Image(f"{save_name}_{feature}_rmse_plot.png")})
-                # plt.close()
+            if feature not in ["targets", "preds", "RMSE"]:
+
+                rmse_per_value = feature_stats.group_by(feature).agg(
+                    pl.col("RMSE").mean().alias("mean_RMSE"),
+                    pl.col("targets").count().alias("Count")
+                )
+
+                if feature in ["arrival_hour", "line_type", "weekday"]:
+                    rmse_per_value = rmse_per_value.sort(feature)
+                else:
+                    rmse_per_value = rmse_per_value.sort("mean_RMSE", descending=True)
+
+                plt.figure(figsize=(12, 6))
+                sns.barplot(x=rmse_per_value.get_column(feature).to_list(), y=rmse_per_value.get_column("mean_RMSE").to_list())
+                plt.title(f"RMSE per {feature}")
+                plt.xlabel(feature)
+                if len(rmse_per_value.get_column(feature).to_list()) > 25:
+                    plt.xticks(rotation=90)
+
+                plt.ylabel("Root Mean Squared Error")
+                plt.tight_layout()
+                plt.savefig(f"{save_name}_{metric_prefix}_{feature}_rmse_plot.png")
+                self.wandb_run.log({f"{save_name}_{metric_prefix}_{feature}_rmse_plot": wandb.Image(f"{save_name}_{metric_prefix}_{feature}_rmse_plot.png")})
+                plt.close()
 
 

@@ -52,7 +52,7 @@ data_prep_obj.visualize_features_in_train_val_test_splits(train_data, val_data, 
 model = GNN(in_channels=train_data[0].x.shape[1], hidden_channels=32, out_channels=1)
 
 trainer_obj = Trainer(model=model, train_data=train_data, val_data=val_data, test_data=test_data, wandb_run=run)
-trainer_obj.train(num_epochs=200)
+trainer_obj.train(num_epochs=50)
 print("Training completed successfully.")
 
 evaluator_obj = Evaluator(wandb_run=run)

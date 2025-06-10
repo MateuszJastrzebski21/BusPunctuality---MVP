@@ -18,7 +18,7 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 import polars as pl
 
-from graph_nn.model import EarlyStopping
+from model import EarlyStopping
 
 
 class Trainer:

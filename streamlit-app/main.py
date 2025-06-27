@@ -1,12 +1,15 @@
+import os
 import streamlit as st
-import pandas as pd
-import polars as pl
-import numpy as np
 import torch
 import torch.nn as nn
+import numpy as np
 import joblib
+from prepare_input import prepare_input
 from datetime import datetime
-from prepare_input import prepare_input  # Zakładam, że funkcja jest w osobnym pliku
+
+
+
+BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 
 # Definicja modelu FCNN (taka sama jak w treningu)
 class FCNN(nn.Module):
@@ -30,55 +33,48 @@ class FCNN(nn.Module):
             nn.Dropout(0.2),
             nn.Linear(8, 1)
         )
-    
+
     def forward(self, x):
         return self.layers(x)
 
-# Wczytanie modelu i obiektów
-model = FCNN(input_size=...)  # Podaj właściwy input_size (liczba cech, np. liczba linii + 5)
-model.load_state_dict(torch.load("../fnn/fcnn_prediction_model.pth")) #WYKONAC KOD Z MODELU I STWORZYC PLIKI
+# Ścieżki do plików
+MODEL_PATH = os.path.join(BASE_DIR, "fcnn_model.pth")
+SCALER_X_PATH = os.path.join(BASE_DIR, "scaler_X.pkl")
+SCALER_Y_PATH = os.path.join(BASE_DIR, "scaler_y.pkl")
+ENCODER_PATH = os.path.join(BASE_DIR, "onehot_encoder.pkl")
+PARQUET_PATH = os.path.join(BASE_DIR, "data", "huge_delays_removed_240625.parquet")
+
+# Wczytanie modelu i pomocniczych obiektów
+model = FCNN(input_size=19)
+model.load_state_dict(torch.load(MODEL_PATH))
 model.eval()
-scaler_X = joblib.load("../fnnscaler_X.pkl")
-scaler_y = joblib.load("../fnnscaler_y.pkl")
-encoder = joblib.load("../fnnonehot_encoder.pkl")
 
-# Ścieżka do pliku Parquet
-parquet_file_path = "../datasets/huge_delays_removed_240625.parquet"
+scaler_X = joblib.load(SCALER_X_PATH)
+scaler_y = joblib.load(SCALER_Y_PATH)
+encoder = joblib.load(ENCODER_PATH)
 
-# Interfejs Streamlit
+# Interfejs użytkownika
 st.title("Bus Delay Prediction")
 
-# Formularz
-stop = st.text_input("Bus Stop")
-line = st.text_input("Bus Line")
+stop_name = st.text_input("Stop Name (Przystanek nazwa)")
+line = st.text_input("Line (np. 126)")
 date = st.date_input("Date")
 time = st.time_input("Time")
 
 if st.button("Predict"):
     try:
-        # Przygotowanie danych wejściowych
-        # 1. Wyodrębnij kluczowe dane do mniejszego pliku
-        # Zamiast wczytywać cały plik Parquet, możemy stworzyć mniejszy plik (np. CSV, JSON lub Parquet) 
-        # zawierający tylko informacje potrzebne do predykcji, czyli:
+        input_features = prepare_input(stop_name, line, date, time, PARQUET_PATH, encoder)
 
-        # Unikalne linie (line).
-        # Przystanki (stop_name, stop_seq, stop_lat, stop_lon) dla każdej linii.
-      
-        input_features = prepare_input(stop, line, date, time, parquet_file_path, encoder)
-        
         # Skalowanie cech
         input_scaled = scaler_X.transform([input_features])
-        
-        # Konwersja na tensor
         input_tensor = torch.tensor(input_scaled, dtype=torch.float32)
-        
+
         # Predykcja
         with torch.no_grad():
             prediction_scaled = model(input_tensor)
             prediction = scaler_y.inverse_transform(prediction_scaled.numpy())[0][0]
-        
-        # Wynik w minutach
-        delay_minutes = prediction / 60  # Konwersja sekund na minuty
-        st.success(f"Predicted delay: {delay_minutes:.2f} minutes")
+
+        st.success(f"Predicted trip time: {prediction:.2f} seconds ({prediction/60:.2f} minutes)")
+
     except Exception as e:
-        st.error(f"Error: {str(e)}")
+        st.error(f"Error: {e}")

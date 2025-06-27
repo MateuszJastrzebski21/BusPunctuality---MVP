@@ -1,33 +1,11 @@
 import polars as pl
+import os
 
-file_path = "/kaggle/input/buspunctuality/przejazdy_5_12_stycznia_2025.csv"
+BASE_DIR = os.path.dirname(os.path.dirname(__file__))
+file_path = os.path.join(BASE_DIR, "data", "huge_delays_removed_240625.parquet")
 
 try:
-    df = pl.read_csv(
-        file_path,
-        separator=";",
-        null_values="NULL",
-        schema_overrides={
-            "date": pl.Datetime,
-            "line": pl.Utf8,
-            "task": pl.Utf8,
-            "stop_seq": pl.Int64,
-            "stop_name": pl.Utf8,
-            "stop_id": pl.Int64,
-            "scheduled_arrival": pl.Datetime,
-            "scheduled_departure": pl.Datetime,
-            "actual_arrival": pl.Datetime,
-            "actual_departure": pl.Datetime,
-            "detection_type": pl.Utf8,
-            "delay": pl.Float64,
-            "stop_desc": pl.Utf8,
-            "stop_lat": pl.Float64,
-            "stop_lon": pl.Float64,
-            "is_weekday": pl.Boolean,
-            "arrival_hour": pl.Int64,
-            "is_holiday": pl.Boolean
-        }
-    )
+    df = pl.read_parquet(file_path)
     print(df["line"].unique().to_list())
     unique_lines = df["line"].unique().to_list()
     print(f"Liczba unikalnych linii: {len(unique_lines)}")
@@ -39,7 +17,6 @@ except FileNotFoundError:
 except Exception as e:
     print(f"Wystąpił błąd podczas wczytywania pliku: {e}")
 
-
 import polars as pl
 import numpy as np
 import torch
@@ -49,33 +26,22 @@ from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
 from sklearn.model_selection import KFold
 from geopy.distance import geodesic
 
-file_path = "/kaggle/input/bus-punctuality-dataset/df_for_modelling_v2.csv"
+BASE_DIR = os.path.dirname(os.path.dirname(__file__))
+file_path = os.path.join(BASE_DIR, "data", "huge_delays_removed_240625.parquet")
 print("Rozpoczęto wczytywanie danych...")
-df = pl.read_csv(
-    file_path,
-    separator=";",
-    null_values="NULL",
-    schema_overrides={
-        "date": pl.Datetime,
-        "line": pl.Utf8,
-        "task": pl.Utf8,
-        "stop_seq": pl.Int64,
-        "stop_name": pl.Utf8,
-        "stop_id": pl.Int64,
-        "scheduled_arrival": pl.Datetime,
-        "scheduled_departure": pl.Datetime,
-        "actual_arrival": pl.Datetime,
-        "actual_departure": pl.Datetime,
-        "detection_type": pl.Utf8,
-        "delay": pl.Float64,
-        "stop_desc": pl.Utf8,
-        "stop_lat": pl.Float64,
-        "stop_lon": pl.Float64,
-        "is_weekday": pl.Boolean,
-        "arrival_hour": pl.Int64,
-        "is_holiday": pl.Boolean
-    }
-)
+df = pl.read_parquet(file_path)
+
+# ✅ DODANE: Mapowanie kolumn
+df = df.rename({
+    "Linia": "line",
+    "Zadanie": "task",
+    "Lp przystanku": "stop_seq",
+    "Rzeczywisty czas przyjazdu": "actual_arrival",
+    "Dzien": "date"
+})
+
+print("Dostępne kolumny:", df.columns)
+print(df.head(5))
 print(f"Dane wczytane pomyślnie. Liczba wierszy: {len(df)}")
 
 print("Obliczanie Trip Time...")
@@ -118,6 +84,12 @@ df = df.with_columns(
 )
 print("Odległości obliczone.")
 
+print("Dodawanie kolumny arrival_hour...")
+df = df.with_columns(
+    pl.col("actual_arrival").dt.hour().alias("arrival_hour")
+)
+print("arrival_hour dodana.")
+
 print("Dodawanie cechy rush_hour...")
 df = df.with_columns(
     pl.col("arrival_hour").is_in([6, 7, 8, 9, 15, 16, 17, 18]).cast(pl.Int8).alias("rush_hour")
@@ -129,6 +101,14 @@ df = df.with_columns(
     (pl.col("distance") > 250).cast(pl.Int8).alias("far_status")
 )
 print("Cechą far_status dodana.")
+
+print("Dodawanie cechy is_weekday...")
+df = df.with_columns(
+    df["date"].dt.weekday().alias("weekday")
+).with_columns(
+    (pl.col("weekday") < 5).cast(pl.Int8).alias("is_weekday")
+)
+print("Cechą is_weekday dodana.")
 
 print("Analiza brakujących danych przed drop_nulls...")
 null_counts = df.select(pl.all().is_null().sum()).to_dicts()
@@ -153,7 +133,8 @@ print(f"Kodowanie one-hot zakończone: {len(line_encoded_cols)} linii.")
 
 print("Przygotowanie cech wejściowych...")
 features = line_encoded_cols + ["distance", "is_weekday", "rush_hour", "stop_seq", "far_status"]
-X = pl.concat([line_encoded_df, df.select(["distance", "is_weekday", "rush_hour", "stop_seq", "far_status"])], how="horizontal").to_numpy()
+X = pl.concat([line_encoded_df, df.select(["distance", "is_weekday", "rush_hour", "stop_seq", "far_status"])],
+              how="horizontal").to_numpy()
 y = df["trip_time"].to_numpy().reshape(-1, 1)
 print("Cechy wejściowe przygotowane.")
 
@@ -163,6 +144,7 @@ X_scaled = scaler_X.fit_transform(X)
 scaler_y = MinMaxScaler()
 y_scaled = scaler_y.fit_transform(y)
 print("Cechy i Trip Time przeskalowane.")
+
 
 class FCNN(nn.Module):
     def __init__(self, input_size):
@@ -185,9 +167,10 @@ class FCNN(nn.Module):
             nn.Dropout(0.2),
             nn.Linear(8, 1)
         )
-    
+
     def forward(self, x):
         return self.layers(x)
+
 
 print("Inicjalizacja walidacji krzyżowej...")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -196,53 +179,53 @@ rmse_scores = []
 print(f"Walidacja krzyżowa zainicjalizowana (5 foldów), urządzenie: {device}.")
 
 for fold, (train_idx, val_idx) in enumerate(kf.split(X_scaled)):
-    print(f"\nRozpoczęto fold {fold+1}...")
+    print(f"\nRozpoczęto fold {fold + 1}...")
     X_train, X_val = X_scaled[train_idx], X_scaled[val_idx]
     y_train, y_val = y_scaled[train_idx], y_scaled[val_idx]
-    
+
     X_train_tensor = torch.tensor(X_train, dtype=torch.float32).to(device)
     y_train_tensor = torch.tensor(y_train, dtype=torch.float32).to(device)
     X_val_tensor = torch.tensor(X_val, dtype=torch.float32).to(device)
     y_val_tensor = torch.tensor(y_val, dtype=torch.float32).to(device)
-    
+
     model = FCNN(input_size=X_scaled.shape[1]).to(device)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
-    
+
     num_epochs = 200
     batch_size = 64
     patience = 10
     best_loss = float('inf')
     epochs_no_improve = 0
-    print(f"Trening folda {fold+1} rozpoczęty (max 200 epok, early stopping po {patience} epok)...")
-    
+    print(f"Trening folda {fold + 1} rozpoczęty (max 200 epok, early stopping po {patience} epok)...")
+
     for epoch in range(num_epochs):
         model.train()
         for i in range(0, len(X_train), batch_size):
-            batch_X = X_train_tensor[i:i+batch_size]
-            batch_y = y_train_tensor[i:i+batch_size]
-            
+            batch_X = X_train_tensor[i:i + batch_size]
+            batch_y = y_train_tensor[i:i + batch_size]
+
             optimizer.zero_grad()
             outputs = model(batch_X)
             loss = criterion(outputs, batch_y)
             loss.backward()
             optimizer.step()
-        
+
         model.eval()
         with torch.no_grad():
             val_outputs = model(X_val_tensor)
             val_loss = criterion(val_outputs, y_val_tensor).item()
-        
+
         if val_loss < best_loss:
             best_loss = val_loss
             epochs_no_improve = 0
         else:
             epochs_no_improve += 1
             if epochs_no_improve >= patience:
-                print(f"Early stopping w epoce {epoch+1}.")
+                print(f"Early stopping w epoce {epoch + 1}.")
                 break
-    
-    print(f"Trening folda {fold+1} zakończony. Ewaluacja...")
+
+    print(f"Trening folda {fold + 1} zakończony. Ewaluacja...")
     model.eval()
     with torch.no_grad():
         val_outputs = model(X_val_tensor)
@@ -251,7 +234,7 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(X_scaled)):
         mse = np.mean((val_outputs_unscaled - y_val_unscaled) ** 2)
         rmse = np.sqrt(mse)
         rmse_scores.append(rmse)
-        print(f"Fold {fold+1}, RMSE: {rmse:.2f} seconds")
+        print(f"Fold {fold + 1}, RMSE: {rmse:.2f} seconds")
 
 print("\nWszystkie foldy zakończone.")
 print(f"Średnie RMSE z walidacji krzyżowej: {np.mean(rmse_scores):.2f} ± {np.std(rmse_scores):.2f} seconds")

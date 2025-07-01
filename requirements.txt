@@ -1,0 +1,7 @@
+streamlit
+torch
+joblib
+numpy
+polars
+geopy
+scikit-learn
